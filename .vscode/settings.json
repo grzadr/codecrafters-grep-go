@@ -17,7 +17,7 @@
     // Files management
     "files.trimTrailingWhitespace": true,
     "files.insertFinalNewline": true,
-    "files.autoSave": "afterDelay",
+    "files.autoSave": "onFocusChange",
     "files.autoSaveDelay": 100,
     "files.associations": {
         ".env": "shellscript",
