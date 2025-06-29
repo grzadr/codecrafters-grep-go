@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"unicode"
-	"unicode/utf8"
 )
 
 const errorExitCode = 2
@@ -41,10 +40,9 @@ func main() {
 }
 
 func matchLine(line []byte, pattern string) (ok bool, err error) {
-	if utf8.RuneCountInString(pattern) != 1 {
-		return ok, fmt.Errorf("unsupported pattern: %q", pattern)
-	}
-
+	// if utf8.RuneCountInString(pattern) != 1 {
+	// 	return ok, fmt.Errorf("unsupported pattern: %q", pattern)
+	// }
 	switch pattern {
 	case `\w`:
 		ok = bytes.ContainsFunc(line, func(r rune) bool {
