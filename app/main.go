@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
-	"unicode"
+
+	"github.com/codecrafters-io/grep-starter-go/internal"
 )
 
 const errorExitCode = 2
@@ -40,24 +40,7 @@ func main() {
 }
 
 func matchLine(line []byte, pattern string) (ok bool, err error) {
-	// if utf8.RuneCountInString(pattern) != 1 {
-	// 	return ok, fmt.Errorf("unsupported pattern: %q", pattern)
-	// }
-	switch pattern {
-	case `\w`:
-		ok = bytes.ContainsFunc(line, func(r rune) bool {
-			return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
-		})
+	p := internal.NewPattern(pattern)
 
-	case `\d`:
-		ok = bytes.ContainsFunc(line, func(r rune) bool {
-			return unicode.IsNumber(r)
-		})
-	default:
-		ok = bytes.ContainsAny(line, pattern)
-	}
-
-	// Uncomment this to pass the first stage
-
-	return ok, nil
+	return p.Match(line), nil
 }
