@@ -8,10 +8,9 @@ import (
 )
 
 type MatchExpression interface {
-	MatchRune(r rune) bool
-	Match(reader *byteReader) bool
-	MatchesMin() int
-	// SafeMatch(reader *RuneReader) bool
+	// MatchRune(r rune) bool
+	Match(reader *runeReader) (matched bool, n int)
+	// MatchesMin() int
 }
 
 // type CharacterClass interface {
@@ -36,6 +35,8 @@ const (
 	AnyNoneOfSymbolClose = `]`
 	AtStartSymbol        = `^`
 	AtEndSymbol          = `$`
+	WildcardSymbol       = `.`
+	AlterationSymbol     = `|`
 )
 
 func NewCharacterClass(expr string) BaseMatchExpression {
@@ -45,6 +46,10 @@ func NewCharacterClass(expr string) BaseMatchExpression {
 	case AlphanumericSymbol:
 		return BaseMatchExpression(func(r rune) bool {
 			return unicode.IsDigit(r) || unicode.IsLetter(r) || r == '_'
+		})
+	case WildcardSymbol:
+		return BaseMatchExpression(func(r rune) bool {
+			return true
 		})
 	default:
 		if utf8.RuneCountInString(expr) != 1 {
@@ -62,33 +67,28 @@ func NewCharacterClass(expr string) BaseMatchExpression {
 	}
 }
 
-func (b BaseMatchExpression) MatchRune(r rune) bool {
-	return b(r)
-}
+// func (b BaseMatchExpression) MatchRune(r rune) bool {
+// 	return b(r)
+// }
 
-func (b BaseMatchExpression) Match(reader *byteReader) (matched bool) {
-	r, n := reader.readRune()
+func (b BaseMatchExpression) Match(reader *runeReader) (matched bool, n int) {
+	r, ok := reader.readRune()
 
-	if n == 0 {
+	if !ok {
 		return
 	}
 
-	if matched = b.MatchRune(r); !matched {
-		reader.discard(n)
-	}
+	matched = b(r)
+	n = 1
 
 	return
-}
-
-func (b BaseMatchExpression) MatchesMin() int {
-	return 1
 }
 
 type AnyOfExpression struct {
 	expressions []MatchExpression
 }
 
-func NewAnyOfExpression(r *byteReader) (expr AnyOfExpression) {
+func NewAnyOfExpression(r *runeReader) (expr AnyOfExpression) {
 	expr = AnyOfExpression{
 		expressions: make([]MatchExpression, 0),
 	}
@@ -97,30 +97,36 @@ func NewAnyOfExpression(r *byteReader) (expr AnyOfExpression) {
 		expr.expressions = append(expr.expressions, NewMatchExpression(r))
 	}
 
-	return
-}
-
-func (e AnyOfExpression) MatchRune(r rune) (matched bool) {
-	for _, expr := range e.expressions {
-		log.Printf("%+v %q\n", e.expressions, string(r))
-
-		if expr.MatchRune(r) {
-			return true
-		}
-	}
+	r.discard(1)
 
 	return
 }
 
-func (e AnyOfExpression) Match(reader *byteReader) (matched bool) {
-	r, n := reader.readRune()
+// func (e AnyOfExpression) MatchRune(r rune) (matched bool) {
+// 	for _, expr := range e.expressions {
+// 		log.Printf("%+v %q\n", e.expressions, string(r))
 
-	if n == 0 {
+// 		if expr.MatchRune(r) {
+// 			return true
+// 		}
+// 	}
+
+// 	return
+// }
+
+func (e AnyOfExpression) Match(reader *runeReader) (matched bool, n int) {
+	if reader.isDone() {
 		return
 	}
 
-	if matched = e.MatchRune(r); !matched {
-		reader.discard(n)
+	offset := reader.offset
+
+	for _, expr := range e.expressions {
+		reader.reset(offset)
+
+		if matched, n = expr.Match(reader); matched {
+			return
+		}
 	}
 
 	return
@@ -134,7 +140,7 @@ type NoneOfExpression struct {
 	AnyOfExpression
 }
 
-func NewNoneOfExpression(r *byteReader) (expr NoneOfExpression) {
+func NewNoneOfExpression(r *runeReader) (expr NoneOfExpression) {
 	expr = NoneOfExpression{
 		AnyOfExpression: NewAnyOfExpression(r),
 	}
@@ -142,30 +148,36 @@ func NewNoneOfExpression(r *byteReader) (expr NoneOfExpression) {
 	return
 }
 
-func (e NoneOfExpression) Match(reader *byteReader) (matched bool) {
-	if _, err := reader.reader.Peek(1); err != nil {
+func (e NoneOfExpression) Match(reader *runeReader) (matched bool, n int) {
+	if reader.isDone() {
 		return
 	}
 
-	return !e.AnyOfExpression.Match(reader)
+	matched, n = e.AnyOfExpression.Match(reader)
+
+	log.Println("noneof matched:", matched)
+
+	return !matched, n
 }
 
 type AtStartExpression struct {
 	MatchExpression
 }
 
-func NewAtStartExpression(reader *byteReader) AtStartExpression {
+func NewAtStartExpression(reader *runeReader) AtStartExpression {
 	return AtStartExpression{
 		MatchExpression: NewMatchExpression(reader),
 	}
 }
 
-func (e AtStartExpression) Match(reader *byteReader) (matched bool) {
+func (e AtStartExpression) Match(reader *runeReader) (matched bool, n int) {
 	if reader.offset != 0 {
-		return false
+		return
 	}
 
-	return e.MatchExpression.Match(reader)
+	matched, n = e.MatchExpression.Match(reader)
+
+	return
 }
 
 type AtEndExpression struct {
@@ -178,18 +190,19 @@ func NewAtEndExpression(expr MatchExpression) AtEndExpression {
 	}
 }
 
-func (e AtEndExpression) Match(reader *byteReader) (matched bool) {
-	if !e.MatchExpression.Match(reader) {
-		return
-	}
+func (e AtEndExpression) Match(reader *runeReader) (matched bool, n int) {
+	matched, n = e.MatchExpression.Match(reader)
 
-	_, n := reader.readRune()
-
-	return n == 0
+	return matched && reader.isDone(), n
 }
 
-func NewMatchExpression(reader *byteReader) MatchExpression {
-	t := reader.readToken()
+func NewMatchExpression(reader *runeReader) MatchExpression {
+	t, ok := reader.readToken()
+
+	if !ok {
+		return nil
+	}
+
 	log.Printf("token %q", t)
 
 	switch t {
@@ -203,8 +216,6 @@ func NewMatchExpression(reader *byteReader) MatchExpression {
 		return NewAtStartExpression(reader)
 	case AtEndSymbol:
 		return AtEndExpression{}
-	case "":
-		return nil
 	default:
 		return NewCharacterClass(t)
 	}
@@ -215,7 +226,7 @@ type Pattern struct {
 }
 
 func NewPattern(expr string) (p Pattern) {
-	reader := NewRuneReaderFromString(expr)
+	reader := NewRuneReader(expr)
 
 	p = Pattern{
 		expressions: make([]MatchExpression, 0, len(expr)),
@@ -238,30 +249,31 @@ func (p Pattern) Last() MatchExpression {
 }
 
 func (p Pattern) Match(line []byte) bool {
-	reader := NewRuneReader(line)
+	reader := NewRuneReaderFromBytes(line)
+	offset := reader.offset
 
 	for !reader.isDone() {
-		matched := true
+		all_matched := true
 
 		for _, expr := range p.expressions {
 			log.Printf("expr %+v\n", expr)
 
-			if !expr.Match(reader) {
+			if matched, _ := expr.Match(reader); !matched {
 				log.Println("not matched")
 
-				matched = false
+				all_matched = false
 
 				break
 			}
 		}
 
-		if matched {
+		if all_matched {
 			return true
 		}
 
-		log.Printf("offset %d", reader.offset)
-
-		reader.discard(1)
+		offset++
+		log.Printf("offset %d reset to %d", reader.offset, offset)
+		reader.reset(offset)
 	}
 
 	return false

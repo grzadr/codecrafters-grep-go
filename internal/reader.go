@@ -1,61 +1,96 @@
 package internal
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"strings"
 )
 
-type byteReader struct {
-	reader *bufio.Reader
+type runeReader struct {
+	// reader *bufio.Reader
+	runes  []rune
 	offset int
-	done   bool
 }
 
-func NewRuneReader(b []byte) *byteReader {
-	return &byteReader{reader: bufio.NewReader(bytes.NewReader(b))}
+func NewRuneReader(s string) *runeReader {
+	return &runeReader{runes: []rune(s)}
 }
 
-func NewRuneReaderFromString(s string) *byteReader {
-	return &byteReader{reader: bufio.NewReader(strings.NewReader(s))}
+func NewRuneReaderFromBytes(b []byte) *runeReader {
+	// return &runeReader{reader: bufio.NewReader(bytes.NewReader(b))}
+	return NewRuneReader(string(b))
 }
 
-func (rr byteReader) isDone() bool {
-	return rr.done
+func (rr runeReader) Len() int {
+	return len(rr.runes)
 }
 
-func (rr *byteReader) readRune() (r rune, n int) {
-	if rr.isDone() {
-		return
-	}
+func (rr runeReader) Left() int {
+	return len(rr.runes) - rr.offset
+}
 
-	r, n, err := rr.reader.ReadRune()
-	rr.done = err != nil
+func (rr runeReader) isDone() bool {
+	return rr.Left() == 0
+}
 
-	if err != nil {
-		return
-	}
+func (rr runeReader) peek() (r rune) {
+	return rr.runes[rr.offset]
+}
 
-	rr.reader.UnreadRune()
+func (rr *runeReader) discard(n int) (d int) {
+	d = min(rr.Left(), n)
+	rr.offset += d
 
 	return
 }
 
-func (rr *byteReader) readToken() (token string) {
+func (rr *runeReader) test(t byte) (ok bool) {
+	if rr.isDone() {
+		return
+	}
+
+	return rr.peek() == rune(t)
+	// d, err := rr.reader.Discard(n)
+	// rr.offset += d
+	// rr.done = err != nil
+}
+
+func (rr *runeReader) reset(offset int) {
+	if offset > rr.Len() {
+		panic(
+			fmt.Sprintf(
+				"cannot reset offset: %d is larger than len %d",
+				offset,
+				rr.Len(),
+			),
+		)
+	}
+
+	rr.offset = offset
+}
+
+func (rr *runeReader) readRune() (r rune, ok bool) {
+	if rr.isDone() {
+		return
+	}
+
+	r = rr.peek()
+	rr.offset += 1
+	ok = true
+
+	return
+}
+
+func (rr *runeReader) readToken() (token string, ok bool) {
 	if rr.isDone() {
 		return
 	}
 
 	for range 2 {
-		r, n, err := rr.reader.ReadRune()
-		if err != nil {
-			rr.done = true
+		var r rune
 
+		if r, ok = rr.readRune(); !ok {
 			return
 		}
 
-		rr.offset += n
 		token = fmt.Sprintf("%s%s", token, string(r))
 
 		if r != '\\' {
@@ -65,32 +100,11 @@ func (rr *byteReader) readToken() (token string) {
 
 	if token == AnyOfSymbol && rr.test('^') {
 		token = NoneOfSymbol
+
+		rr.discard(1)
+	} else if token == `\\` {
+		return rr.readToken()
 	}
 
 	return
-}
-
-func (rr *byteReader) discard(n int) {
-	if rr.isDone() {
-		return
-	}
-
-	d, err := rr.reader.Discard(n)
-	rr.offset += d
-	rr.done = err != nil
-}
-
-func (rr *byteReader) test(t byte) bool {
-	if b, err := rr.reader.ReadByte(); err != nil {
-		rr.done = true
-	} else if b == t {
-		return true
-	} else {
-		rr.reader.UnreadByte()
-	}
-
-	return false
-	// d, err := rr.reader.Discard(n)
-	// rr.offset += d
-	// rr.done = err != nil
 }
