@@ -193,6 +193,8 @@ func NewAtEndExpression(expr MatchExpression) AtEndExpression {
 func (e AtEndExpression) Match(reader *runeReader) (matched bool, n int) {
 	matched, n = e.MatchExpression.Match(reader)
 
+	log.Println("atend:", matched, reader.isDone())
+
 	return matched && reader.isDone(), n
 }
 
@@ -215,6 +217,8 @@ func NewMatchExpression(reader *runeReader) MatchExpression {
 	case AtStartSymbol:
 		return NewAtStartExpression(reader)
 	case AtEndSymbol:
+		log.Println("end symbol")
+
 		return AtEndExpression{}
 	default:
 		return NewCharacterClass(t)
@@ -245,7 +249,7 @@ func (p Pattern) Len() int {
 }
 
 func (p Pattern) Last() MatchExpression {
-	return p.expressions[p.Len()]
+	return p.expressions[p.Len()-1]
 }
 
 func (p Pattern) Match(line []byte) bool {
@@ -283,8 +287,9 @@ func (p *Pattern) append(expr MatchExpression) {
 	switch expr.(type) {
 	case nil:
 	case AtEndExpression:
-		p.expressions = append(p.expressions, NewAtEndExpression(p.Last()))
+		end := NewAtEndExpression(p.Last())
 		p.expressions = p.expressions[:p.Len()-1]
+		p.expressions = append(p.expressions, end)
 	default:
 		p.expressions = append(p.expressions, expr)
 	}
