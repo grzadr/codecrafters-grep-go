@@ -35,6 +35,10 @@ func (rr runeReader) peek() (r rune) {
 	return rr.runes[rr.offset]
 }
 
+func (rr runeReader) prev() (r rune) {
+	return rr.runes[max(0, rr.offset-1)]
+}
+
 func (rr *runeReader) discard(n int) (d int) {
 	d = min(rr.Left(), n)
 	rr.offset += d
@@ -77,6 +81,10 @@ func (rr *runeReader) readRune() (r rune, ok bool) {
 	ok = true
 
 	return
+}
+
+func (rr *runeReader) unreadRune() {
+	rr.offset--
 }
 
 func (rr *runeReader) readToken() (token string, ok bool) {

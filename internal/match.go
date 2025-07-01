@@ -36,7 +36,8 @@ const (
 	AtStartSymbol        = `^`
 	AtEndSymbol          = `$`
 	WildcardSymbol       = `.`
-	AlterationSymbol     = `|`
+	OneOrMoreSymbol      = `+`
+	ZeroOrOneSymbol      = `?`
 )
 
 func NewCharacterClass(expr string) BaseMatchExpression {
@@ -94,7 +95,7 @@ func NewAnyOfExpression(r *runeReader) (expr AnyOfExpression) {
 	}
 
 	for !r.isDone() && !r.test(AnyNoneOfSymbolClose[0]) {
-		expr.expressions = append(expr.expressions, NewMatchExpression(r))
+		expr.expressions = append(expr.expressions, NewMatchExpression(r, nil))
 	}
 
 	r.discard(1)
@@ -166,7 +167,7 @@ type AtStartExpression struct {
 
 func NewAtStartExpression(reader *runeReader) AtStartExpression {
 	return AtStartExpression{
-		MatchExpression: NewMatchExpression(reader),
+		MatchExpression: NewMatchExpression(reader, nil),
 	}
 }
 
@@ -198,7 +199,50 @@ func (e AtEndExpression) Match(reader *runeReader) (matched bool, n int) {
 	return matched && reader.isDone(), n
 }
 
-func NewMatchExpression(reader *runeReader) MatchExpression {
+type CountExpression struct {
+	expr MatchExpression
+	from int
+	to   int
+}
+
+func NewCountExpression(expr MatchExpression, from, to int) CountExpression {
+	return CountExpression{
+		expr: expr,
+		from: from,
+		to:   to,
+	}
+}
+
+func (e CountExpression) Match(reader *runeReader) (matched bool, n int) {
+	total_n := 0
+
+	matches := 0
+
+	for {
+		if matches == e.to {
+			return matched, total_n
+		}
+
+		matched, n = e.expr.Match(reader)
+
+		total_n += n
+
+		if matched {
+			matches++
+		} else if matches >= e.from {
+			reader.unreadRune()
+
+			return true, total_n
+		} else {
+			return matched, total_n
+		}
+	}
+}
+
+func NewMatchExpression(
+	reader *runeReader,
+	prev MatchExpression,
+) MatchExpression {
 	t, ok := reader.readToken()
 
 	if !ok {
@@ -219,7 +263,11 @@ func NewMatchExpression(reader *runeReader) MatchExpression {
 	case AtEndSymbol:
 		log.Println("end symbol")
 
-		return AtEndExpression{}
+		return NewAtEndExpression(prev)
+	case ZeroOrOneSymbol:
+		return NewCountExpression(prev, 0, 1)
+	case OneOrMoreSymbol:
+		return NewCountExpression(prev, 1, -1)
 	default:
 		return NewCharacterClass(t)
 	}
@@ -236,9 +284,13 @@ func NewPattern(expr string) (p Pattern) {
 		expressions: make([]MatchExpression, 0, len(expr)),
 	}
 
+	var prev MatchExpression
+
 	for !reader.isDone() {
+		expr := NewMatchExpression(reader, prev)
 		// p.expressions = append(p.expressions, )
-		p.append(NewMatchExpression(reader))
+		p.append(expr)
+		prev = expr
 	}
 
 	return
@@ -259,16 +311,43 @@ func (p Pattern) Match(line []byte) bool {
 	for !reader.isDone() {
 		all_matched := true
 
+		last_n := 0
+
+		var last_matched_rune rune
+
 		for _, expr := range p.expressions {
-			log.Printf("expr %+v\n", expr)
+			log.Printf("expr %+v offset %d", expr, reader.offset)
 
-			if matched, _ := expr.Match(reader); !matched {
-				log.Println("not matched")
+			if matched, n := expr.Match(reader); matched {
+				log.Println("matched")
 
-				all_matched = false
+				last_matched_rune = reader.prev()
 
-				break
+				if _, ok := expr.(CountExpression); ok {
+					last_n = n
+				} else {
+					last_n = 0
+				}
+
+				continue
 			}
+
+			if c, ok := expr.(BaseMatchExpression); ok && last_n > 1 &&
+				c(last_matched_rune) {
+				log.Println("testing last rune")
+
+				last_n = 0
+
+				reader.unreadRune()
+
+				continue
+			}
+
+			log.Println("not matched")
+
+			all_matched = false
+
+			break
 		}
 
 		if all_matched {
@@ -286,10 +365,8 @@ func (p Pattern) Match(line []byte) bool {
 func (p *Pattern) append(expr MatchExpression) {
 	switch expr.(type) {
 	case nil:
-	case AtEndExpression:
-		end := NewAtEndExpression(p.Last())
-		p.expressions = p.expressions[:p.Len()-1]
-		p.expressions = append(p.expressions, end)
+	case AtEndExpression, CountExpression:
+		p.expressions[p.Len()-1] = expr
 	default:
 		p.expressions = append(p.expressions, expr)
 	}
