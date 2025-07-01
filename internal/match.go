@@ -7,9 +7,27 @@ import (
 	"unicode/utf8"
 )
 
+type MatchResult struct {
+	offset   int
+	mainSize int
+	size     int
+}
+
+func (r MatchResult) Len() int {
+	return r.size
+}
+
+func (r MatchResult) MainLen() int {
+	return r.mainSize
+}
+
+func (r MatchResult) Ok() bool {
+	return r.Len() > 0
+}
+
 type MatchExpression interface {
 	// MatchRune(r rune) bool
-	Match(reader *runeReader) (matched bool, n int)
+	Match(reader *runeReader) (result MatchResult)
 	// MatchesMin() int
 }
 
@@ -72,15 +90,12 @@ func NewCharacterClass(expr string) BaseMatchExpression {
 // 	return b(r)
 // }
 
-func (b BaseMatchExpression) Match(reader *runeReader) (matched bool, n int) {
-	r, ok := reader.readRune()
-
-	if !ok {
-		return
+func (b BaseMatchExpression) Match(reader *runeReader) (result MatchResult) {
+	if r, ok := reader.readRune(); ok && b(r) {
+		result.offset = reader.offset
+		result.size = 1
+		result.mainSize = 1
 	}
-
-	matched = b(r)
-	n = 1
 
 	return
 }
@@ -103,19 +118,7 @@ func NewAnyOfExpression(r *runeReader) (expr AnyOfExpression) {
 	return
 }
 
-// func (e AnyOfExpression) MatchRune(r rune) (matched bool) {
-// 	for _, expr := range e.expressions {
-// 		log.Printf("%+v %q\n", e.expressions, string(r))
-
-// 		if expr.MatchRune(r) {
-// 			return true
-// 		}
-// 	}
-
-// 	return
-// }
-
-func (e AnyOfExpression) Match(reader *runeReader) (matched bool, n int) {
+func (e AnyOfExpression) Match(reader *runeReader) (result MatchResult) {
 	if reader.isDone() {
 		return
 	}
@@ -311,9 +314,9 @@ func (p Pattern) Match(line []byte) bool {
 	for !reader.isDone() {
 		all_matched := true
 
-		last_n := 0
+		var last_expr MatchExpression
 
-		var last_matched_rune rune
+		// var last_matched_rune rune
 
 		for _, expr := range p.expressions {
 			log.Printf("expr %+v offset %d", expr, reader.offset)
