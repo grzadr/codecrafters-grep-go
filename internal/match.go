@@ -8,27 +8,65 @@ import (
 )
 
 type MatchResult struct {
-	offset   int
-	mainSize int
-	size     int
+	offset    int
+	count     int
+	mainCount int
+	lengths   []int
 }
 
-func (r MatchResult) Len() int {
-	return r.size
+func NewMatchResultOne(offset int) (result MatchResult) {
+	return MatchResult{
+		offset:    offset,
+		count:     1,
+		mainCount: 1,
+		lengths:   []int{1},
+	}
 }
 
-func (r MatchResult) MainLen() int {
-	return r.mainSize
+func (r MatchResult) Len() (length int) {
+	for _, l := range r.lengths {
+		length += l
+	}
+
+	return
 }
 
-func (r MatchResult) Ok() bool {
-	return r.Len() > 0
+func (r MatchResult) hasRest() bool {
+	return r.count-r.mainCount > 0
+}
+
+func (r MatchResult) lenMain() (length int) {
+	for _, l := range r.lengths[:r.mainCount] {
+		length += l
+	}
+
+	return
+}
+
+func (r MatchResult) offsetRest() (offset int) {
+	return r.offset + r.lenMain()
+}
+
+func (r MatchResult) lenRest() (length int) {
+	for _, l := range r.lengths[r.mainCount:] {
+		length += l
+	}
+
+	return
+}
+
+func (r *MatchResult) append(length int) {
+	r.lengths = append(r.lengths, length)
+}
+
+func (r MatchResult) ok() bool {
+	return r.count > 0
 }
 
 type MatchExpression interface {
 	// MatchRune(r rune) bool
 	Match(reader *runeReader) (result MatchResult)
-	// MatchesMin() int
+	MatchesMin() int
 }
 
 // type CharacterClass interface {
@@ -90,11 +128,13 @@ func NewCharacterClass(expr string) BaseMatchExpression {
 // 	return b(r)
 // }
 
-func (b BaseMatchExpression) Match(reader *runeReader) (result MatchResult) {
-	if r, ok := reader.readRune(); ok && b(r) {
-		result.offset = reader.offset
-		result.size = 1
-		result.mainSize = 1
+func (e BaseMatchExpression) MatchesMin() int {
+	return 1
+}
+
+func (e BaseMatchExpression) Match(reader *runeReader) (result MatchResult) {
+	if r, ok := reader.readRune(); ok && e(r) {
+		result = NewMatchResultOne(reader.offset - 1)
 	}
 
 	return
@@ -118,6 +158,10 @@ func NewAnyOfExpression(r *runeReader) (expr AnyOfExpression) {
 	return
 }
 
+func (e AnyOfExpression) MatchesMin() int {
+	return 1
+}
+
 func (e AnyOfExpression) Match(reader *runeReader) (result MatchResult) {
 	if reader.isDone() {
 		return
@@ -128,16 +172,14 @@ func (e AnyOfExpression) Match(reader *runeReader) (result MatchResult) {
 	for _, expr := range e.expressions {
 		reader.reset(offset)
 
-		if matched, n = expr.Match(reader); matched {
+		if result = expr.Match(reader); result.ok() {
 			return
 		}
 	}
 
-	return
-}
+	result = MatchResult{}
 
-func (e AnyOfExpression) MatchesMin() int {
-	return 1
+	return
 }
 
 type NoneOfExpression struct {
@@ -152,16 +194,18 @@ func NewNoneOfExpression(r *runeReader) (expr NoneOfExpression) {
 	return
 }
 
-func (e NoneOfExpression) Match(reader *runeReader) (matched bool, n int) {
+func (e NoneOfExpression) Match(reader *runeReader) (result MatchResult) {
 	if reader.isDone() {
 		return
 	}
 
-	matched, n = e.AnyOfExpression.Match(reader)
+	result = NewMatchResultOne(reader.offset)
 
-	log.Println("noneof matched:", matched)
+	if r := e.AnyOfExpression.Match(reader); r.ok() {
+		result = MatchResult{}
+	}
 
-	return !matched, n
+	return
 }
 
 type AtStartExpression struct {
@@ -174,14 +218,12 @@ func NewAtStartExpression(reader *runeReader) AtStartExpression {
 	}
 }
 
-func (e AtStartExpression) Match(reader *runeReader) (matched bool, n int) {
+func (e AtStartExpression) Match(reader *runeReader) (result MatchResult) {
 	if reader.offset != 0 {
 		return
 	}
 
-	matched, n = e.MatchExpression.Match(reader)
-
-	return
+	return e.MatchExpression.Match(reader)
 }
 
 type AtEndExpression struct {
@@ -194,12 +236,16 @@ func NewAtEndExpression(expr MatchExpression) AtEndExpression {
 	}
 }
 
-func (e AtEndExpression) Match(reader *runeReader) (matched bool, n int) {
-	matched, n = e.MatchExpression.Match(reader)
+func (e AtEndExpression) Match(reader *runeReader) (result MatchResult) {
+	result = e.MatchExpression.Match(reader)
 
-	log.Println("atend:", matched, reader.isDone())
+	// log.Println("atend:", matched, reader.isDone())
 
-	return matched && reader.isDone(), n
+	if !result.ok() || !reader.isDone() {
+		result = MatchResult{}
+	}
+
+	return
 }
 
 type CountExpression struct {
@@ -216,30 +262,37 @@ func NewCountExpression(expr MatchExpression, from, to int) CountExpression {
 	}
 }
 
-func (e CountExpression) Match(reader *runeReader) (matched bool, n int) {
-	total_n := 0
+func (e CountExpression) MatchesMin() int {
+	return e.from
+}
 
-	matches := 0
+func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
+	result.offset = reader.offset
 
 	for {
-		if matches == e.to {
-			return matched, total_n
+		offset := reader.offset
+
+		r := e.expr.Match(reader)
+
+		if r.ok() {
+			result.count++
+			result.append(r.Len())
+			result.mainCount = min(result.count, e.from)
+
+			continue
 		}
 
-		matched, n = e.expr.Match(reader)
+		if result.mainCount >= e.from {
+			reader.reset(offset)
 
-		total_n += n
-
-		if matched {
-			matches++
-		} else if matches >= e.from {
-			reader.unreadRune()
-
-			return true, total_n
-		} else {
-			return matched, total_n
+			result.mainCount = max(1, result.mainCount)
+			result.count = max(result.mainCount, result.count)
 		}
+
+		break
 	}
+
+	return
 }
 
 func NewMatchExpression(
@@ -311,49 +364,48 @@ func (p Pattern) Match(line []byte) bool {
 	reader := NewRuneReaderFromBytes(line)
 	offset := reader.offset
 
-	for !reader.isDone() {
-		all_matched := true
+	last_result := MatchResult{}
 
-		var last_expr MatchExpression
+	for !reader.isDone() {
+		matched := p.Len()
 
 		// var last_matched_rune rune
 
 		for _, expr := range p.expressions {
 			log.Printf("expr %+v offset %d", expr, reader.offset)
 
-			if matched, n := expr.Match(reader); matched {
+			// offsetBefore := reader.offset
+
+			if result := expr.Match(reader); result.ok() {
 				log.Println("matched")
 
-				last_matched_rune = reader.prev()
+				matched--
 
-				if _, ok := expr.(CountExpression); ok {
-					last_n = n
-				} else {
-					last_n = 0
+				last_result = result
+
+				continue
+			}
+
+			if last_result.hasRest() {
+				log.Println("checking rest")
+				reader.reset(last_result.offsetRest())
+				result := p.matchAt(reader, last_result.lenRest(), expr)
+
+				if result.ok() {
+					log.Println("check matched")
+
+					matched--
+
+					last_result = result
+
+					continue
 				}
-
-				continue
 			}
-
-			if c, ok := expr.(BaseMatchExpression); ok && last_n > 1 &&
-				c(last_matched_rune) {
-				log.Println("testing last rune")
-
-				last_n = 0
-
-				reader.unreadRune()
-
-				continue
-			}
-
-			log.Println("not matched")
-
-			all_matched = false
 
 			break
 		}
 
-		if all_matched {
+		if matched == 0 {
 			return true
 		}
 
@@ -373,4 +425,31 @@ func (p *Pattern) append(expr MatchExpression) {
 	default:
 		p.expressions = append(p.expressions, expr)
 	}
+}
+
+func (p Pattern) matchAt(
+	reader *runeReader,
+	n int,
+	expr MatchExpression,
+) (result MatchResult) {
+	offset := reader.offset
+
+	// n -= expr.MatchesMin()
+
+	log.Println("check init", offset, n)
+
+	for i := n - 1; i >= 0; i-- {
+		log.Println("check", offset, i)
+		reader.reset(offset + i)
+
+		if reader.isDone() {
+			return
+		}
+
+		if r := expr.Match(reader); r.ok() {
+			return r
+		}
+	}
+
+	return
 }
