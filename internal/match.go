@@ -331,6 +331,7 @@ func NewAllOfExpression(reader *runeReader) (expr AllOfExpression) {
 
 	for !reader.isDone() && !reader.test(CaptureEndSymbol[0]) {
 		if reader.test(AlterationSymbol[0]) {
+			log.Println("found |")
 			reader.discard(1)
 
 			break
@@ -352,9 +353,16 @@ func (e AllOfExpression) Match(reader *runeReader) (result MatchResult) {
 	for _, ex := range e.expr {
 		if r := ex.Match(reader); r.ok() {
 			result.count++
-			result
+			result.mainCount++
+			result.lengths = append(result.lengths, r.lengths...)
+
+			continue
 		}
+
+		return MatchResult{}
 	}
+
+	return
 }
 
 func (e AllOfExpression) MatchesMin() int {
@@ -367,6 +375,8 @@ type CaptureExpression struct {
 }
 
 func NewCaptureExpression(reader *runeReader) (expr CaptureExpression) {
+	log.Println("new capture")
+
 	expr = CaptureExpression{
 		expr: make([]AllOfExpression, 0),
 	}
@@ -430,7 +440,8 @@ func NewMatchExpression(
 	case CaptureStartSymbol:
 		return NewCaptureExpression(reader)
 	case AlterationSymbol:
-		// return NewAlterationExpression(prev)
+		return AllOfExpression{}
+	// return NewAlterationExpression(prev)
 	default:
 		return NewCharacterClass(t)
 	}
@@ -527,7 +538,7 @@ func (p Pattern) Match(line []byte) bool {
 func (p *Pattern) append(expr MatchExpression) {
 	switch expr.(type) {
 	case nil:
-	case AtEndExpression, CountExpression, AlterationExpression:
+	case AtEndExpression, CountExpression:
 		p.expressions[p.Len()-1] = expr
 	default:
 		p.expressions = append(p.expressions, expr)
