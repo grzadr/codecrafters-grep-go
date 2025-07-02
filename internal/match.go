@@ -2,7 +2,6 @@ package internal
 
 import (
 	"fmt"
-	"log"
 	"slices"
 	"unicode"
 	"unicode/utf8"
@@ -102,10 +101,6 @@ func (s MatchSlice) MatchesMin() int {
 }
 
 func (s MatchSlice) String() string {
-	// repr := make([]string, len(s))
-	// for i, expr := range s {
-	// 	repr[i] = expr.String()
-	// }
 	return fmt.Sprintf("%T<%+v>", s, []MatchExpression(s))
 }
 
@@ -116,12 +111,6 @@ func (s MatchSlice) Match(reader *runeReader) (result MatchResult) {
 
 	result.offset = reader.offset
 
-	log.Printf(
-		"matching %+v on %d",
-		s,
-		result.offset,
-	)
-
 	for _, expr := range s {
 		if r := expr.Match(reader); r.ok() {
 			result.count++
@@ -129,22 +118,10 @@ func (s MatchSlice) Match(reader *runeReader) (result MatchResult) {
 			result.lengths = append(result.lengths, r.lengths...)
 
 			continue
-		} else {
-			log.Printf(
-				"expr %+v failed %+v",
-				expr,
-				result,
-			)
 		}
 
 		return MatchResult{}
 	}
-
-	log.Printf(
-		"expr %+v matched %q",
-		s,
-		string(reader.runes[result.offset:reader.offset]),
-	)
 
 	return result
 }
@@ -164,17 +141,11 @@ func (s MatchSlice) last() MatchExpression {
 func (s *MatchSlice) append(
 	expr MatchExpression,
 ) (prev MatchExpression) {
-	log.Printf("%T appending to slice\n%+v", s, expr)
-
 	switch expr.(type) {
 	case nil:
 	case AtEndExpression, CountExpression:
-		log.Println("replace last")
-
 		(*s)[s.len()-1] = expr
 	default:
-		log.Println("append")
-
 		*s = append(*s, expr)
 	}
 
@@ -392,23 +363,8 @@ func NewAtEndExpression(expr MatchExpression) AtEndExpression {
 func (e AtEndExpression) Match(reader *runeReader) (result MatchResult) {
 	result = e.MatchExpression.Match(reader)
 
-	// log.Println("atend:", matched, reader.isDone())
-
 	if !result.ok() || !reader.isDone() {
-		log.Printf(
-			"expr %+v failed %d, %t",
-			e,
-			reader.offset,
-			reader.isDone(),
-		)
-
 		result = MatchResult{}
-	} else {
-		log.Printf(
-			"expr %+v matched %q",
-			e,
-			string(reader.runes[result.offset:reader.offset]),
-		)
 	}
 
 	return
@@ -442,8 +398,6 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 	for {
 		offset := reader.offset
 
-		log.Printf("%+v current offset %d", e, reader.offset)
-
 		r := e.expr.Match(reader)
 
 		if r.ok() {
@@ -451,20 +405,8 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 			result.append(r.Len())
 			result.mainCount = min(result.count, e.from)
 
-			log.Printf(
-				"expr %+v matched %q",
-				e.expr,
-				string(reader.runes[result.offset:reader.offset]),
-			)
-
 			continue
 		}
-
-		log.Printf(
-			"expr %+v failed %d %t %+v",
-			e.expr,
-			reader.offset, reader.isDone(), result,
-		)
 
 		if result.mainCount >= e.from {
 			reader.reset(offset)
@@ -497,10 +439,7 @@ func NewAllOfExpression(reader *runeReader) (expr AllOfExpression) {
 	expr = NewAllOfExpressionDefault()
 
 	for !reader.isDone() && !reader.test(CaptureEndSymbol[0]) {
-		log.Printf("current %q", string(reader.peek()))
-
 		if reader.test(AlterationSymbol[0]) {
-			log.Println("found |")
 			reader.discard(1)
 
 			break
@@ -547,17 +486,11 @@ func (e AllOfExpression) len() int {
 }
 
 func (e *AllOfExpression) append(expr MatchExpression) {
-	log.Printf("appending %+v", expr)
-
 	switch expr.(type) {
 	case nil:
 	case AtEndExpression, CountExpression:
-		log.Println("replace last")
-
 		e.expr[e.len()-1] = expr
 	default:
-		log.Println("append")
-
 		e.expr = append(e.expr, expr)
 	}
 }
@@ -568,8 +501,6 @@ type CaptureExpression struct {
 }
 
 func NewCaptureExpression(reader *runeReader) (capture CaptureExpression) {
-	log.Println("new capture")
-
 	capture = CaptureExpression{
 		expr: slices.Grow(
 			[]MatchSlice{NewMatchSlice()},
@@ -580,10 +511,7 @@ func NewCaptureExpression(reader *runeReader) (capture CaptureExpression) {
 	var prev MatchExpression
 
 	for !reader.isDone() && !reader.test(CaptureEndSymbol[0]) {
-		log.Printf("prev expression: %+v", prev)
 		expr := NewMatchExpression(reader, prev)
-		log.Printf("new expression: %+v", expr)
-		// p.expressions = append(p.expressions, )
 		prev = capture.append(expr)
 	}
 
@@ -633,18 +561,12 @@ func (e CaptureExpression) last() MatchExpression {
 func (e *CaptureExpression) append(
 	expr MatchExpression,
 ) (prev MatchExpression) {
-	log.Printf("%T appending %+v", e, expr)
-
 	switch v := expr.(type) {
 	case nil:
-	// case AtEndExpression, CountExpression:
-	// 	log.Println("replace last")
 
 	case MatchSlice:
 		e.expr = append(e.expr, v)
 	default:
-		log.Println("append")
-
 		e.expr[e.len()-1].append(expr)
 	}
 
@@ -668,8 +590,6 @@ func NewMatchExpression(
 	if !ok {
 		return nil
 	}
-
-	log.Printf("token %q", t)
 
 	switch t {
 	case AnyOfSymbol:
@@ -733,16 +653,8 @@ func (p Pattern) Match(line []byte) bool {
 	for !reader.isDone() {
 		matched := p.Len()
 
-		// var last_matched_rune rune
-
 		for _, expr := range p.expressions {
-			log.Printf("expr %+v offset %d", expr, reader.offset)
-
-			// offsetBefore := reader.offset
-
 			if result := expr.Match(reader); result.ok() {
-				log.Println("matched")
-
 				matched--
 
 				last_result = result
@@ -751,13 +663,10 @@ func (p Pattern) Match(line []byte) bool {
 			}
 
 			if last_result.hasRest() {
-				log.Println("checking rest")
 				reader.reset(last_result.offsetRest())
 				result := p.matchAt(reader, last_result.lenRest(), expr)
 
 				if result.ok() {
-					log.Println("check matched")
-
 					matched--
 
 					last_result = result
@@ -774,7 +683,6 @@ func (p Pattern) Match(line []byte) bool {
 		}
 
 		offset++
-		log.Printf("offset %d reset to %d", reader.offset, offset)
 		reader.reset(offset)
 	}
 
@@ -782,17 +690,11 @@ func (p Pattern) Match(line []byte) bool {
 }
 
 func (p *Pattern) append(expr MatchExpression) {
-	log.Printf("appending %+v", expr)
-
 	switch expr.(type) {
 	case nil:
 	case AtEndExpression, CountExpression:
-		log.Println("replace last")
-
 		p.expressions[p.Len()-1] = expr
 	default:
-		log.Println("append")
-
 		p.expressions = append(p.expressions, expr)
 	}
 }
@@ -804,12 +706,7 @@ func (p Pattern) matchAt(
 ) (result MatchResult) {
 	offset := reader.offset
 
-	// n -= expr.MatchesMin()
-
-	log.Println("check init", offset, n)
-
 	for i := n - 1; i >= 0; i-- {
-		log.Println("check", offset, i)
 		reader.reset(offset + i)
 
 		if reader.isDone() {
