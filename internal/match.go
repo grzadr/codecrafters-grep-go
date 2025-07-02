@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"unicode"
 	"unicode/utf8"
 )
@@ -12,6 +13,7 @@ type MatchResult struct {
 	count     int
 	mainCount int
 	lengths   []int
+	str       string
 }
 
 func NewMatchResultOne(offset int) (result MatchResult) {
@@ -90,6 +92,10 @@ const (
 
 const defaultMatchSliceCapacity = 32
 
+var countCaptureExpressions = 0
+
+var captureGroupMatches map[int]string
+
 type MatchSlice []MatchExpression
 
 func NewMatchSlice() MatchSlice {
@@ -122,6 +128,8 @@ func (s MatchSlice) Match(reader *runeReader) (result MatchResult) {
 
 		return MatchResult{}
 	}
+
+	result.str = reader.str(result.offset)
 
 	return result
 }
@@ -165,6 +173,7 @@ func (e BaseMatchExpression) String() string {
 func (e BaseMatchExpression) Match(reader *runeReader) (result MatchResult) {
 	if r, ok := reader.readRune(); ok && e(r) {
 		result = NewMatchResultOne(reader.offset - 1)
+		result.str = reader.str(result.offset)
 	}
 
 	return
@@ -231,7 +240,9 @@ func NewCharacterClass(expr string) MatchExpression {
 	case WildcardSymbol:
 		return NewWildcardExpression()
 	default:
-		if utf8.RuneCountInString(expr) != 1 {
+		if expr[0] == '\\' && unicode.IsNumber(rune(expr[1])) {
+			return NewBackReferenceExpression(expr[1:])
+		} else if utf8.RuneCountInString(expr) != 1 {
 			panic(
 				fmt.Sprintf(
 					"character expression %q must be single rune",
@@ -292,10 +303,6 @@ func (e AnyOfExpression) Match(reader *runeReader) (result MatchResult) {
 
 func (e AnyOfExpression) String() string {
 	return fmt.Sprintf("%T<%+v>", e, e.expr)
-}
-
-func (e *AnyOfExpression) append(expr MatchExpression) {
-	e.expr = append(e.expr, expr)
 }
 
 type NoneOfExpression struct {
@@ -396,6 +403,10 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 	result.offset = reader.offset
 
 	for {
+		if result.count == e.to {
+			break
+		}
+
 		offset := reader.offset
 
 		r := e.expr.Match(reader)
@@ -404,14 +415,15 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 			result.count++
 			result.append(r.Len())
 			result.mainCount = min(result.count, e.from)
+			result.str += r.str
 
 			continue
 		}
 
-		if result.mainCount >= e.from {
+		if result.count >= e.from {
 			reader.reset(offset)
 
-			result.mainCount = max(1, result.mainCount)
+			result.mainCount = max(1, e.from)
 			result.count = max(result.mainCount, result.count)
 		}
 
@@ -425,87 +437,19 @@ func (e CountExpression) String() string {
 	return fmt.Sprintf("%T{%d, %d}<%+v>", e, e.from, e.to, e.expr)
 }
 
-type AllOfExpression struct {
-	expr []MatchExpression
-}
-
-func NewAllOfExpressionDefault() AllOfExpression {
-	return AllOfExpression{
-		expr: make([]MatchExpression, 0),
-	}
-}
-
-func NewAllOfExpression(reader *runeReader) (expr AllOfExpression) {
-	expr = NewAllOfExpressionDefault()
-
-	for !reader.isDone() && !reader.test(CaptureEndSymbol[0]) {
-		if reader.test(AlterationSymbol[0]) {
-			reader.discard(1)
-
-			break
-		}
-
-		expr.expr = append(expr.expr, NewMatchExpression(reader, nil))
-	}
-
-	return
-}
-
-func (e AllOfExpression) Match(reader *runeReader) (result MatchResult) {
-	if reader.isDone() {
-		return
-	}
-
-	result.offset = reader.offset
-
-	for _, ex := range e.expr {
-		if r := ex.Match(reader); r.ok() {
-			result.count++
-			result.mainCount++
-			result.lengths = append(result.lengths, r.lengths...)
-
-			continue
-		}
-
-		return MatchResult{}
-	}
-
-	return
-}
-
-func (e AllOfExpression) MatchesMin() int {
-	return len(e.expr)
-}
-
-func (e AllOfExpression) String() string {
-	return fmt.Sprintf("%T<%+v>", e, e.expr)
-}
-
-func (e AllOfExpression) len() int {
-	return len(e.expr)
-}
-
-func (e *AllOfExpression) append(expr MatchExpression) {
-	switch expr.(type) {
-	case nil:
-	case AtEndExpression, CountExpression:
-		e.expr[e.len()-1] = expr
-	default:
-		e.expr = append(e.expr, expr)
-	}
-}
-
 type CaptureExpression struct {
-	expr       []MatchSlice
-	alteration bool
+	expr []MatchSlice
+	num  int
 }
 
 func NewCaptureExpression(reader *runeReader) (capture CaptureExpression) {
+	countCaptureExpressions++
 	capture = CaptureExpression{
 		expr: slices.Grow(
 			[]MatchSlice{NewMatchSlice()},
 			defaultMatchSliceCapacity,
 		),
+		num: countCaptureExpressions,
 	}
 
 	var prev MatchExpression
@@ -531,6 +475,7 @@ func (e CaptureExpression) Match(reader *runeReader) (result MatchResult) {
 		reader.reset(offset)
 
 		if result = expr.Match(reader); result.ok() {
+			captureGroupMatches[e.num] = result.str
 			// result.count++
 			// result.mainCount++
 			// result.lengths = append(result.lengths, r.lengths...)
@@ -573,13 +518,50 @@ func (e *CaptureExpression) append(
 	return e.last()
 }
 
-// type AlterationExpression struct {
-// 	expr
-// }
+type BackReferenceExpression int
 
-// func NewAlterationExpression() AlterationExpression {
-// 	return AlterationExpression{AnyOfExpression: NewAnyOfExpressionDefault()}
-// }
+func NewBackReferenceExpression(num string) (expr BackReferenceExpression) {
+	ref_num, _ := strconv.Atoi(num)
+
+	expr = BackReferenceExpression(ref_num)
+
+	// match := captureGroupMatches[ref_num]
+
+	// for _, r := range match {
+	// 	expr.MatchSlice = append(expr.MatchSlice, NewCharacterExpression(r))
+	// }
+
+	return
+}
+
+func (e BackReferenceExpression) Match(
+	reader *runeReader,
+) (result MatchResult) {
+	if reader.isDone() {
+		return
+	}
+
+	match := captureGroupMatches[int(e)]
+
+	result = NewMatchResultOne(reader.offset)
+	result.str = match
+
+	for _, r := range match {
+		if r := NewCharacterExpression(r).Match(reader); !r.ok() {
+			return MatchResult{}
+		}
+	}
+
+	return
+}
+
+func (e BackReferenceExpression) MatchesMin() int {
+	panic("uses MatchesMin")
+}
+
+func (e BackReferenceExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, int(e))
+}
 
 func NewMatchExpression(
 	reader *runeReader,
@@ -650,13 +632,19 @@ func (p Pattern) Match(line []byte) bool {
 
 	last_result := MatchResult{}
 
+	// log.Printf("pattern: %+v", p.expressions)
+
 	for !reader.isDone() {
 		matched := p.Len()
+		captureGroupMatches = make(map[int]string)
+
+		// log.Printf("matching pattern at %d", reader.offset)
 
 		for _, expr := range p.expressions {
+			// log.Printf("try match %+v at %d", expr, reader.offset)
 			if result := expr.Match(reader); result.ok() {
+				// log.Printf("matched %+v", result)
 				matched--
-
 				last_result = result
 
 				continue
@@ -668,12 +656,13 @@ func (p Pattern) Match(line []byte) bool {
 
 				if result.ok() {
 					matched--
-
 					last_result = result
 
 					continue
 				}
 			}
+
+			// log.Printf("failed %+v", expr)
 
 			break
 		}

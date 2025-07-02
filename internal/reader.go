@@ -108,3 +108,7 @@ func (rr *runeReader) readToken() (token string, ok bool) {
 
 	return
 }
+
+func (rr runeReader) str(from int) string {
+	return string(rr.runes[from:rr.offset])
+}
