@@ -119,9 +119,10 @@ func (s MatchSlice) Match(reader *runeReader) (result MatchResult) {
 
 	for _, expr := range s {
 		if r := expr.Match(reader); r.ok() {
-			result.count++
-			result.mainCount++
+			result.count += r.count
+			result.mainCount += r.mainCount
 			result.lengths = append(result.lengths, r.lengths...)
+			result.str += r.str
 
 			continue
 		}
@@ -563,36 +564,65 @@ func (e BackReferenceExpression) String() string {
 	return fmt.Sprintf("%T<%+v>", e, int(e))
 }
 
+type expressionFactory func(*runeReader, MatchExpression) MatchExpression
+
+var expressionFactories = map[string]expressionFactory{
+	AnyOfSymbol:        factoryAnyOf,
+	NoneOfSymbol:       factoryNoneOf,
+	AtStartSymbol:      factoryAtStart,
+	AtEndSymbol:        factoryAtEnd,
+	ZeroOrOneSymbol:    factoryZeroOrOne,
+	OneOrMoreSymbol:    factoryOneOrMore,
+	CaptureStartSymbol: factoryCapture,
+	AlterationSymbol:   factoryAlteration,
+}
+
 func NewMatchExpression(
 	reader *runeReader,
 	prev MatchExpression,
 ) MatchExpression {
 	t, ok := reader.readToken()
-
 	if !ok {
 		return nil
 	}
 
-	switch t {
-	case AnyOfSymbol:
-		return NewAnyOfExpression(reader)
-	case NoneOfSymbol:
-		return NewNoneOfExpression(reader)
-	case AtStartSymbol:
-		return NewAtStartExpression(reader)
-	case AtEndSymbol:
-		return NewAtEndExpression(prev)
-	case ZeroOrOneSymbol:
-		return NewCountExpression(prev, 0, 1)
-	case OneOrMoreSymbol:
-		return NewCountExpression(prev, 1, -1)
-	case CaptureStartSymbol:
-		return NewCaptureExpression(reader)
-	case AlterationSymbol:
-		return NewMatchSlice()
-	default:
-		return NewCharacterClass(t)
+	if factory, exists := expressionFactories[t]; exists {
+		return factory(reader, prev)
 	}
+
+	return NewCharacterClass(t)
+}
+
+func factoryAnyOf(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewAnyOfExpression(reader)
+}
+
+func factoryNoneOf(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewNoneOfExpression(reader)
+}
+
+func factoryAtStart(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewAtStartExpression(reader)
+}
+
+func factoryAtEnd(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewAtEndExpression(prev)
+}
+
+func factoryZeroOrOne(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewCountExpression(prev, 0, 1)
+}
+
+func factoryOneOrMore(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewCountExpression(prev, 1, -1)
+}
+
+func factoryCapture(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewCaptureExpression(reader)
+}
+
+func factoryAlteration(reader *runeReader, prev MatchExpression) MatchExpression {
+	return NewMatchSlice()
 }
 
 type Pattern struct {
@@ -632,18 +662,12 @@ func (p Pattern) Match(line []byte) bool {
 
 	last_result := MatchResult{}
 
-	// log.Printf("pattern: %+v", p.expressions)
-
 	for !reader.isDone() {
 		matched := p.Len()
 		captureGroupMatches = make(map[int]string)
 
-		// log.Printf("matching pattern at %d", reader.offset)
-
 		for _, expr := range p.expressions {
-			// log.Printf("try match %+v at %d", expr, reader.offset)
 			if result := expr.Match(reader); result.ok() {
-				// log.Printf("matched %+v", result)
 				matched--
 				last_result = result
 
@@ -658,11 +682,11 @@ func (p Pattern) Match(line []byte) bool {
 					matched--
 					last_result = result
 
+					reader.reset(result.offset + 1)
+
 					continue
 				}
 			}
-
-			// log.Printf("failed %+v", expr)
 
 			break
 		}
@@ -695,6 +719,8 @@ func (p Pattern) matchAt(
 ) (result MatchResult) {
 	offset := reader.offset
 
+	in_row := 0
+
 	for i := n - 1; i >= 0; i-- {
 		reader.reset(offset + i)
 
@@ -703,8 +729,16 @@ func (p Pattern) matchAt(
 		}
 
 		if r := expr.Match(reader); r.ok() {
-			return r
+			if in_row == 0 {
+				result = r
+			}
+
+			in_row++
+
+			continue
 		}
+
+		in_row = 0
 	}
 
 	return
