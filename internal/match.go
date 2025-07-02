@@ -564,65 +564,36 @@ func (e BackReferenceExpression) String() string {
 	return fmt.Sprintf("%T<%+v>", e, int(e))
 }
 
-type expressionFactory func(*runeReader, MatchExpression) MatchExpression
-
-var expressionFactories = map[string]expressionFactory{
-	AnyOfSymbol:        factoryAnyOf,
-	NoneOfSymbol:       factoryNoneOf,
-	AtStartSymbol:      factoryAtStart,
-	AtEndSymbol:        factoryAtEnd,
-	ZeroOrOneSymbol:    factoryZeroOrOne,
-	OneOrMoreSymbol:    factoryOneOrMore,
-	CaptureStartSymbol: factoryCapture,
-	AlterationSymbol:   factoryAlteration,
-}
-
 func NewMatchExpression(
 	reader *runeReader,
 	prev MatchExpression,
 ) MatchExpression {
 	t, ok := reader.readToken()
+
 	if !ok {
 		return nil
 	}
 
-	if factory, exists := expressionFactories[t]; exists {
-		return factory(reader, prev)
+	switch t {
+	case AnyOfSymbol:
+		return NewAnyOfExpression(reader)
+	case NoneOfSymbol:
+		return NewNoneOfExpression(reader)
+	case AtStartSymbol:
+		return NewAtStartExpression(reader)
+	case AtEndSymbol:
+		return NewAtEndExpression(prev)
+	case ZeroOrOneSymbol:
+		return NewCountExpression(prev, 0, 1)
+	case OneOrMoreSymbol:
+		return NewCountExpression(prev, 1, -1)
+	case CaptureStartSymbol:
+		return NewCaptureExpression(reader)
+	case AlterationSymbol:
+		return NewMatchSlice()
+	default:
+		return NewCharacterClass(t)
 	}
-
-	return NewCharacterClass(t)
-}
-
-func factoryAnyOf(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewAnyOfExpression(reader)
-}
-
-func factoryNoneOf(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewNoneOfExpression(reader)
-}
-
-func factoryAtStart(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewAtStartExpression(reader)
-}
-
-func factoryAtEnd(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewAtEndExpression(prev)
-}
-
-func factoryZeroOrOne(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewCountExpression(prev, 0, 1)
-}
-
-func factoryOneOrMore(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewCountExpression(prev, 1, -1)
-}
-
-func factoryCapture(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewCaptureExpression(reader)
-}
-
-func factoryAlteration(reader *runeReader, prev MatchExpression) MatchExpression {
-	return NewMatchSlice()
 }
 
 type Pattern struct {
