@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"log"
+	"slices"
 	"unicode"
 	"unicode/utf8"
 )
@@ -67,25 +68,14 @@ type MatchExpression interface {
 	// MatchRune(r rune) bool
 	Match(reader *runeReader) (result MatchResult)
 	MatchesMin() int
+	String() string
 }
-
-// type CharacterClass interface {
-// 	MatchExpression
-// 	MatchRune(r rune) bool
-// 	// EqualCode(ref string) bool
-// }
-
-type BaseMatchExpression func(r rune) bool
-
-// func (b BaseCharacterClass) EqualCode(other string) bool {
-// 	return string(b) == other
-// }
 
 type MatchExpressionSymbol string
 
 const (
 	AlphanumericSymbol   = `\w`
-	AlterationSymbol     = `)`
+	AlterationSymbol     = `|`
 	AnyNoneOfSymbolClose = `]`
 	AnyOfSymbol          = `[`
 	AtEndSymbol          = `$`
@@ -99,40 +89,106 @@ const (
 	ZeroOrOneSymbol      = `?`
 )
 
-func NewCharacterClass(expr string) BaseMatchExpression {
-	switch expr {
-	case DecimalSymbol:
-		return BaseMatchExpression(unicode.IsNumber)
-	case AlphanumericSymbol:
-		return BaseMatchExpression(func(r rune) bool {
-			return unicode.IsDigit(r) || unicode.IsLetter(r) || r == '_'
-		})
-	case WildcardSymbol:
-		return BaseMatchExpression(func(r rune) bool {
-			return true
-		})
-	default:
-		if utf8.RuneCountInString(expr) != 1 {
-			panic(
-				fmt.Sprintf(
-					"character expression %q must be single rune",
-					expr,
-				),
+const defaultMatchSliceCapacity = 32
+
+type MatchSlice []MatchExpression
+
+func NewMatchSlice() MatchSlice {
+	return make(MatchSlice, 0, defaultMatchSliceCapacity)
+}
+
+func (s MatchSlice) MatchesMin() int {
+	return s.len()
+}
+
+func (s MatchSlice) String() string {
+	// repr := make([]string, len(s))
+	// for i, expr := range s {
+	// 	repr[i] = expr.String()
+	// }
+	return fmt.Sprintf("%T<%+v>", s, []MatchExpression(s))
+}
+
+func (s MatchSlice) Match(reader *runeReader) (result MatchResult) {
+	if reader.isDone() {
+		return result
+	}
+
+	result.offset = reader.offset
+
+	log.Printf(
+		"matching %+v on %d",
+		s,
+		result.offset,
+	)
+
+	for _, expr := range s {
+		if r := expr.Match(reader); r.ok() {
+			result.count++
+			result.mainCount++
+			result.lengths = append(result.lengths, r.lengths...)
+
+			continue
+		} else {
+			log.Printf(
+				"expr %+v failed %+v",
+				expr,
+				result,
 			)
 		}
 
-		return BaseMatchExpression(func(r rune) bool {
-			return []rune(expr)[0] == r
-		})
+		return MatchResult{}
 	}
+
+	log.Printf(
+		"expr %+v matched %q",
+		s,
+		string(reader.runes[result.offset:reader.offset]),
+	)
+
+	return result
 }
 
-// func (b BaseMatchExpression) MatchRune(r rune) bool {
-// 	return b(r)
-// }
+func (s MatchSlice) len() int {
+	return len(s)
+}
+
+func (s MatchSlice) last() MatchExpression {
+	if s.len() == 0 {
+		return nil
+	}
+
+	return s[s.len()-1]
+}
+
+func (s *MatchSlice) append(
+	expr MatchExpression,
+) (prev MatchExpression) {
+	log.Printf("%T appending to slice\n%+v", s, expr)
+
+	switch expr.(type) {
+	case nil:
+	case AtEndExpression, CountExpression:
+		log.Println("replace last")
+
+		(*s)[s.len()-1] = expr
+	default:
+		log.Println("append")
+
+		*s = append(*s, expr)
+	}
+
+	return s.last()
+}
+
+type BaseMatchExpression func(r rune) bool
 
 func (e BaseMatchExpression) MatchesMin() int {
 	return 1
+}
+
+func (e BaseMatchExpression) String() string {
+	return fmt.Sprintf("%T", e)
 }
 
 func (e BaseMatchExpression) Match(reader *runeReader) (result MatchResult) {
@@ -143,17 +199,95 @@ func (e BaseMatchExpression) Match(reader *runeReader) (result MatchResult) {
 	return
 }
 
+type DecimalExpression struct{ BaseMatchExpression }
+
+func NewDecimalExpression() DecimalExpression {
+	return DecimalExpression{BaseMatchExpression: unicode.IsNumber}
+}
+
+func (e DecimalExpression) String() string {
+	return fmt.Sprintf("%T<>", e)
+}
+
+type AlphanumericExpression struct{ BaseMatchExpression }
+
+func NewAlphanumericExpression() AlphanumericExpression {
+	return AlphanumericExpression{BaseMatchExpression: func(r rune) bool {
+		return unicode.IsDigit(r) || unicode.IsLetter(r) || r == '_'
+	}}
+}
+
+func (e AlphanumericExpression) String() string {
+	return fmt.Sprintf("%T<>", e)
+}
+
+type WildcardExpression struct{ BaseMatchExpression }
+
+func NewWildcardExpression() WildcardExpression {
+	return WildcardExpression{BaseMatchExpression: func(r rune) bool {
+		return true
+	}}
+}
+
+func (e WildcardExpression) String() string {
+	return fmt.Sprintf("%T<>", e)
+}
+
+type CharacterExpression struct {
+	BaseMatchExpression
+	char rune
+}
+
+func NewCharacterExpression(char rune) CharacterExpression {
+	return CharacterExpression{
+		BaseMatchExpression: func(r rune) bool {
+			return char == r
+		},
+		char: char,
+	}
+}
+
+func (e CharacterExpression) String() string {
+	return fmt.Sprintf("%T<%q>", e, string(e.char))
+}
+
+func NewCharacterClass(expr string) MatchExpression {
+	switch expr {
+	case DecimalSymbol:
+		return NewDecimalExpression()
+	case AlphanumericSymbol:
+		return NewAlphanumericExpression()
+	case WildcardSymbol:
+		return NewWildcardExpression()
+	default:
+		if utf8.RuneCountInString(expr) != 1 {
+			panic(
+				fmt.Sprintf(
+					"character expression %q must be single rune",
+					expr,
+				),
+			)
+		}
+
+		return NewCharacterExpression([]rune(expr)[0])
+	}
+}
+
 type AnyOfExpression struct {
-	expressions []MatchExpression
+	expr []MatchExpression
+}
+
+func NewAnyOfExpressionDefault() AnyOfExpression {
+	return AnyOfExpression{
+		expr: make([]MatchExpression, 0),
+	}
 }
 
 func NewAnyOfExpression(r *runeReader) (expr AnyOfExpression) {
-	expr = AnyOfExpression{
-		expressions: make([]MatchExpression, 0),
-	}
+	expr = NewAnyOfExpressionDefault()
 
 	for !r.isDone() && !r.test(AnyNoneOfSymbolClose[0]) {
-		expr.expressions = append(expr.expressions, NewMatchExpression(r, nil))
+		expr.expr = append(expr.expr, NewMatchExpression(r, nil))
 	}
 
 	r.discard(1)
@@ -172,7 +306,7 @@ func (e AnyOfExpression) Match(reader *runeReader) (result MatchResult) {
 
 	offset := reader.offset
 
-	for _, expr := range e.expressions {
+	for _, expr := range e.expr {
 		reader.reset(offset)
 
 		if result = expr.Match(reader); result.ok() {
@@ -183,6 +317,14 @@ func (e AnyOfExpression) Match(reader *runeReader) (result MatchResult) {
 	result = MatchResult{}
 
 	return
+}
+
+func (e AnyOfExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, e.expr)
+}
+
+func (e *AnyOfExpression) append(expr MatchExpression) {
+	e.expr = append(e.expr, expr)
 }
 
 type NoneOfExpression struct {
@@ -211,6 +353,10 @@ func (e NoneOfExpression) Match(reader *runeReader) (result MatchResult) {
 	return
 }
 
+func (e NoneOfExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, e.AnyOfExpression)
+}
+
 type AtStartExpression struct {
 	MatchExpression
 }
@@ -229,6 +375,10 @@ func (e AtStartExpression) Match(reader *runeReader) (result MatchResult) {
 	return e.MatchExpression.Match(reader)
 }
 
+func (e AtStartExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, e.MatchExpression)
+}
+
 type AtEndExpression struct {
 	MatchExpression
 }
@@ -245,10 +395,27 @@ func (e AtEndExpression) Match(reader *runeReader) (result MatchResult) {
 	// log.Println("atend:", matched, reader.isDone())
 
 	if !result.ok() || !reader.isDone() {
+		log.Printf(
+			"expr %+v failed %d, %t",
+			e,
+			reader.offset,
+			reader.isDone(),
+		)
+
 		result = MatchResult{}
+	} else {
+		log.Printf(
+			"expr %+v matched %q",
+			e,
+			string(reader.runes[result.offset:reader.offset]),
+		)
 	}
 
 	return
+}
+
+func (e AtEndExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, e.MatchExpression)
 }
 
 type CountExpression struct {
@@ -275,6 +442,8 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 	for {
 		offset := reader.offset
 
+		log.Printf("%+v current offset %d", e, reader.offset)
+
 		r := e.expr.Match(reader)
 
 		if r.ok() {
@@ -282,8 +451,20 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 			result.append(r.Len())
 			result.mainCount = min(result.count, e.from)
 
+			log.Printf(
+				"expr %+v matched %q",
+				e.expr,
+				string(reader.runes[result.offset:reader.offset]),
+			)
+
 			continue
 		}
+
+		log.Printf(
+			"expr %+v failed %d %t %+v",
+			e.expr,
+			reader.offset, reader.isDone(), result,
+		)
 
 		if result.mainCount >= e.from {
 			reader.reset(offset)
@@ -295,26 +476,12 @@ func (e CountExpression) Match(reader *runeReader) (result MatchResult) {
 		break
 	}
 
-	return
+	return result
 }
 
-// type AlterationExpression AnyOfExpression
-
-// func NewAlterationExpression(prev MatchExpression) (expr
-// AlterationExpression) {
-// 	switch p := prev.(type) {
-// 	case AlterationExpression:
-// 	}
-
-// 	expr = AlterationExpression{
-// 		expressions: []MatchExpression{prev},
-// 	}
-
-// 	return
-// }
-
-// func (e *AlterationExpression) append(expr MatchExpression) {
-// }
+func (e CountExpression) String() string {
+	return fmt.Sprintf("%T{%d, %d}<%+v>", e, e.from, e.to, e.expr)
+}
 
 type AllOfExpression struct {
 	expr []MatchExpression
@@ -330,6 +497,8 @@ func NewAllOfExpression(reader *runeReader) (expr AllOfExpression) {
 	expr = NewAllOfExpressionDefault()
 
 	for !reader.isDone() && !reader.test(CaptureEndSymbol[0]) {
+		log.Printf("current %q", string(reader.peek()))
+
 		if reader.test(AlterationSymbol[0]) {
 			log.Println("found |")
 			reader.discard(1)
@@ -369,20 +538,53 @@ func (e AllOfExpression) MatchesMin() int {
 	return len(e.expr)
 }
 
-type CaptureExpression struct {
-	expr []AllOfExpression
-	num  int
+func (e AllOfExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, e.expr)
 }
 
-func NewCaptureExpression(reader *runeReader) (expr CaptureExpression) {
+func (e AllOfExpression) len() int {
+	return len(e.expr)
+}
+
+func (e *AllOfExpression) append(expr MatchExpression) {
+	log.Printf("appending %+v", expr)
+
+	switch expr.(type) {
+	case nil:
+	case AtEndExpression, CountExpression:
+		log.Println("replace last")
+
+		e.expr[e.len()-1] = expr
+	default:
+		log.Println("append")
+
+		e.expr = append(e.expr, expr)
+	}
+}
+
+type CaptureExpression struct {
+	expr       []MatchSlice
+	alteration bool
+}
+
+func NewCaptureExpression(reader *runeReader) (capture CaptureExpression) {
 	log.Println("new capture")
 
-	expr = CaptureExpression{
-		expr: make([]AllOfExpression, 0),
+	capture = CaptureExpression{
+		expr: slices.Grow(
+			[]MatchSlice{NewMatchSlice()},
+			defaultMatchSliceCapacity,
+		),
 	}
 
+	var prev MatchExpression
+
 	for !reader.isDone() && !reader.test(CaptureEndSymbol[0]) {
-		expr.expr = append(expr.expr, NewAllOfExpression(reader))
+		log.Printf("prev expression: %+v", prev)
+		expr := NewMatchExpression(reader, prev)
+		log.Printf("new expression: %+v", expr)
+		// p.expressions = append(p.expressions, )
+		prev = capture.append(expr)
 	}
 
 	reader.discard(1)
@@ -395,22 +597,67 @@ func (e CaptureExpression) Match(reader *runeReader) (result MatchResult) {
 		return
 	}
 
-	result.offset = reader.offset
+	offset := reader.offset
 
 	for _, expr := range e.expr {
-		reader.reset(result.offset)
+		reader.reset(offset)
 
 		if result = expr.Match(reader); result.ok() {
-			break
+			// result.count++
+			// result.mainCount++
+			// result.lengths = append(result.lengths, r.lengths...)
+			// continue
+			return
 		}
 	}
 
-	return
+	return MatchResult{}
 }
 
 func (e CaptureExpression) MatchesMin() int {
-	return 1
+	return len(e.expr)
 }
+
+func (e CaptureExpression) String() string {
+	return fmt.Sprintf("%T<%+v>", e, e.expr)
+}
+
+func (e CaptureExpression) len() int {
+	return len(e.expr)
+}
+
+func (e CaptureExpression) last() MatchExpression {
+	return e.expr[e.len()-1].last()
+}
+
+func (e *CaptureExpression) append(
+	expr MatchExpression,
+) (prev MatchExpression) {
+	log.Printf("%T appending %+v", e, expr)
+
+	switch v := expr.(type) {
+	case nil:
+	// case AtEndExpression, CountExpression:
+	// 	log.Println("replace last")
+
+	case MatchSlice:
+		e.expr = append(e.expr, v)
+	default:
+		log.Println("append")
+
+		e.expr[e.len()-1].append(expr)
+	}
+
+	return e.last()
+}
+
+// type AlterationExpression struct {
+// 	expr
+// }
+
+// func NewAlterationExpression() AlterationExpression {
+// 	return AlterationExpression{AnyOfExpression: NewAnyOfExpressionDefault()}
+// }
 
 func NewMatchExpression(
 	reader *runeReader,
@@ -440,8 +687,7 @@ func NewMatchExpression(
 	case CaptureStartSymbol:
 		return NewCaptureExpression(reader)
 	case AlterationSymbol:
-		return AllOfExpression{}
-	// return NewAlterationExpression(prev)
+		return NewMatchSlice()
 	default:
 		return NewCharacterClass(t)
 	}
@@ -536,11 +782,17 @@ func (p Pattern) Match(line []byte) bool {
 }
 
 func (p *Pattern) append(expr MatchExpression) {
+	log.Printf("appending %+v", expr)
+
 	switch expr.(type) {
 	case nil:
 	case AtEndExpression, CountExpression:
+		log.Println("replace last")
+
 		p.expressions[p.Len()-1] = expr
 	default:
+		log.Println("append")
+
 		p.expressions = append(p.expressions, expr)
 	}
 }
