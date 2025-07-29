@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
+	"path"
 
 	"github.com/codecrafters-io/grep-starter-go/internal"
 )
@@ -58,7 +60,11 @@ func main() {
 	case 0:
 		ok, err = matchLine(args.pattern)
 	case 1:
-		ok, err = matchFile(args.pattern, args.files[0])
+		if args.recursive {
+			ok, err = matchRecursive(args.pattern, args.files[0])
+		} else {
+			ok, err = matchFile(args.pattern, args.files[0])
+		}
 	default:
 		ok, err = matchMultipleFiles(args.pattern, args.files)
 	}
@@ -117,4 +123,27 @@ func matchMultipleFiles(
 	}
 
 	return
+}
+
+func matchRecursive(
+	pattern internal.Pattern,
+	dirname string,
+) (ok bool, err error) {
+	files := make([]string, 0)
+
+	fs.WalkDir(
+		os.DirFS(dirname),
+		".",
+		func(fullpath string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+
+			files = append(files, path.Join(dirname, fullpath))
+
+			return nil
+		},
+	)
+
+	return matchMultipleFiles(pattern, files)
 }
