@@ -110,7 +110,7 @@ func matchMultipleFiles(
 				return ok, line.Err
 			}
 
-			fmt.Printf("%s: %s", filename, string(line.Data))
+			fmt.Printf("%s:%s\n", filename, string(line.Data))
 
 			ok = true
 		}
