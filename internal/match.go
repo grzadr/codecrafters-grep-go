@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"unicode"
@@ -713,4 +714,22 @@ func (p Pattern) matchAt(
 	}
 
 	return
+}
+
+func (p Pattern) MatchFile(filename string) iter.Seq[Line] {
+	return func(yield func(Line) bool) {
+		for line := range readLines(filename) {
+			if line.Err != nil {
+				return
+			}
+
+			if !p.Match(line.Data) {
+				continue
+			}
+
+			if !yield(line) {
+				return
+			}
+		}
+	}
 }
